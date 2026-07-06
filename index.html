@@ -1846,13 +1846,28 @@ function showView(name) {
     } else if (koClosedNow && !isAdminMode) {
       // Window closed → show the REAL results bracket, read-only & live.
       koShowResultsBracket();
+    } else if (currentPlayer) {
+      // FIX: If a user is logged in, double check their live submission status first
+      koResultsMode = null;
+      koGetPlayerPreds(currentPlayer).then(already => {
+        if (already && already.length > 0) {
+          // If they sneaked in but already submitted, force-load their read-only saved sheet
+          koOpenPlayerBracket(currentPlayer);
+        } else {
+          // Otherwise, proceed to let them fill out the empty matchups safely
+          koLoadResultsTeams().then(() => { koState = {}; renderBracket(); });
+        }
+      }).catch(() => {
+        // Fallback safety barrier
+        koLoadResultsTeams().then(() => { koState = {}; renderBracket(); });
+      });
     } else {
-      // Window open (or admin) → editable bracket from resolved teams.
+      // No player logged in at all
       koResultsMode = null;
       koLoadResultsTeams().then(() => { koState = {}; renderBracket(); });
     }
   }
-}
+} // <--- This curly brace closes the entire showView function
 
 // ══════════════════════════════════════════════════════
 // KNOCKOUT BRACKET RENDER
