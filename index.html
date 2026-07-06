@@ -2429,6 +2429,7 @@ document.getElementById('btn-start').addEventListener('click', async () => {
     // If they already submitted a KO bracket, block re-entry (one submission)
     const already = await koGetPlayerPreds(currentPlayer);
     if (already && already.length > 0) {
+      currentPlayer = null;
       errEl.textContent = '⚠ You have already submitted your knockout bracket. No changes allowed.';
       errEl.style.display = 'block';
       btn.innerHTML = 'START PREDICTING →';
