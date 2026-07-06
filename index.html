@@ -1887,18 +1887,19 @@ function koSeedTeams() {
 let koTeamsLoaded = false;
 async function koLoadResultsTeams() {
   try {
-    const rows = await sbFetch('ko_results?select=slot,home_team,away_team');
+    // MODIFIED: Fetch all columns to get scores and winners
+    const rows = await sbFetch('ko_results?select=*'); 
     if (Array.isArray(rows) && rows.length) {
+      window.koOfficialResults = {};
       const teams = {};
       rows.forEach(r => {
+        window.koOfficialResults[r.slot] = r; // Store historical results globally
         teams[r.slot] = { home: r.home_team || null, away: r.away_team || null };
       });
-      // Only adopt if at least one real team is present
       const hasReal = Object.values(teams).some(t => t.home || t.away);
       if (hasReal) window.KO_TEAMS = teams;
     }
   } catch (e) {
-    // If the fetch fails, we silently keep test seed — bracket still works.
     console.warn('ko_results load failed, using test teams:', e.message);
   }
   koTeamsLoaded = true;
@@ -2000,14 +2001,34 @@ function koResolveDownstream() {
   KO_PROGRESSION.forEach(s => {
     const st = koState[s.id];
     let newHome, newAway;
-    if (s.losers) { // 3rd place: losers of the two semis
-      newHome = koLoser(s.feeds[0]);
-      newAway = koLoser(s.feeds[1]);
+    
+    const getOfficialWinner = (slotId) => {
+      return window.koOfficialResults?.[slotId]?.winner || null;
+    };
+    const getOfficialLoser = (slotId) => {
+      const res = window.koOfficialResults?.[slotId];
+      if (!res || !res.home_team || !res.away_team) return null;
+      return res.winner === res.home_team ? res.away_team : res.home_team;
+    };
+
+    // If the feeding round is R32 or R16, read database results. Otherwise use predictions.
+    const getFeederWinner = (slotId) => {
+      if (slotId.startsWith('R32-') || slotId.startsWith('R16-')) return getOfficialWinner(slotId);
+      return koAdvancer(slotId);
+    };
+    const getFeederLoser = (slotId) => {
+      if (slotId.startsWith('R32-') || slotId.startsWith('R16-')) return getOfficialLoser(slotId);
+      return koLoser(slotId);
+    };
+
+    if (s.losers) { 
+      newHome = getFeederLoser(s.feeds[0]);
+      newAway = getFeederLoser(s.feeds[1]);
     } else {
-      newHome = koAdvancer(s.feeds[0]);
-      newAway = koAdvancer(s.feeds[1]);
+      newHome = getFeederWinner(s.feeds[0]);
+      newAway = getFeederWinner(s.feeds[1]);
     }
-    // If the teams feeding this slot changed, wipe the stale prediction.
+
     if (newHome !== st.home || newAway !== st.away) {
       st.home = newHome; st.away = newAway;
       st.hs = null; st.as = null; st.advance = null;
@@ -2124,6 +2145,25 @@ function renderBracket() {
   const predCard = (id, meta) => {
     if (koResultsMode) return resultsCard(id, meta);
     if (koViewMode) return scoredCard(id, meta);
+    // ─── START OF ADDED CODE ───
+    if (id.startsWith('R32-') || id.startsWith('R16-')) {
+    const res = window.koOfficialResults?.[id] || null;
+    const cls = 'ko-match';
+    const dateStr = KO_DATES[id] ? `<span class="ko-date">${KO_DATES[id]}</span>` : '';
+    const metaHtml = (meta || dateStr) ? `<div class="ko-meta">${meta || ''}${meta && dateStr ? ' · ' : ''}${dateStr}</div>` : '';
+    if (!res || (!res.home_team && !res.away_team)) {
+      return `<div class="${cls}">${metaHtml}<div class="ko-team tbd"><span>—</span></div><div class="ko-vs">vs</div><div class="ko-team tbd"><span>—</span></div></div>`;
+    }
+    const hasScore = res.home_score != null && res.away_score != null;
+    const adv = res.winner || null;
+    const side = (team, score) => {
+      if (!team) return `<div class="ko-team tbd"><span>TBD</span></div>`;
+      const advCls = (adv && adv === team) ? ' advanced' : '';
+      return `<div class="ko-team${advCls}"><span class="ko-team-side">${flag(team)}<span>${team}</span></span><span class="ko-score-static">${hasScore ? score : ''}</span></div>`;
+    };
+    return `<div class="${cls}">${metaHtml}${side(res.home_team, res.home_score)}<div class="ko-vs">vs</div>${side(res.away_team, res.away_score)}</div>`;
+  }
+  // ─── END OF ADDED CODE ───
     const st = koState[id];
     const cls = id === 'FINAL' ? 'ko-match ko-pred ko-final-match' : 'ko-match ko-pred';
     const dateStr = KO_DATES[id] ? `<span class="ko-date">${KO_DATES[id]}</span>` : '';
@@ -2242,6 +2282,7 @@ let koFocus = null;
 function koPredictedCount() {
   let n = 0;
   Object.keys(koState).forEach(id => {
+    if (id.startsWith('R32-') || id.startsWith('R16-')) return; // ADDED: Skip counting historical rounds
     const st = koState[id];
     if (st.home && st.away && st.hs != null && st.as != null && koAdvancer(id)) n++;
   });
@@ -2258,12 +2299,12 @@ function koUpdateSummary() {
     } else if (ws === 'closed') {
       el.innerHTML = `Predictions are closed`;
     } else {
-      el.innerHTML = `<b>${n}</b> / 32 matches predicted`;
+      el.innerHTML = `<b>${n}</b> / 8 matches predicted`;
     }
   }
   const btn = document.getElementById('ko-submit-btn');
   if (btn) {
-    btn.disabled = (n < 32) || (ws !== 'open');
+    btn.disabled = (n < 8) || (ws !== 'open');
     btn.textContent = ws === 'before' ? 'OPENS JUN 28, 08:00'
       : ws === 'closed' ? 'CLOSED'
       : 'SUBMIT BRACKET →';
@@ -2293,7 +2334,7 @@ async function koSubmit() {
   const ws = koWindowState();
   if (ws === 'before') { showToast('Predictions open June 28 at 08:00', false); return; }
   if (ws === 'closed') { showToast('Predictions are closed', false); return; }
-  if (koPredictedCount() < 32) { showToast('Predict all 32 matches first', false); return; }
+  if (koPredictedCount() < 8) { showToast('Predict all 32 matches first', false); return; }
   btn.disabled = true;
   const orig = btn.textContent;
   btn.textContent = 'Saving…';
